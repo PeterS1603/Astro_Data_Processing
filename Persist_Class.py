@@ -159,13 +159,15 @@ class persistence_characterization:
                 
                 self.avg_fps = self.avg_fluence/self.light_exptime
                 
+                '''
                 ax[0, 0].plot(xarr,cubic(xarr,*popt),c='k')
                 ax[0, 0].plot(xarr,cubic(xarr,*self.avg_model),c='r')
                 ax[0, 0].plot(xarr,cubic(xarr,self.avg_model[0],
                                             self.avg_model[1], ###################################################### COME BACK TO FIX
                                             self.avg_model[2],
                                             line(self.med_fluence,*self.d_equ)),c='blue')
-            
+                '''
+                
             sm = cm.ScalarMappable(cmap=cmap_dt, norm=norm_dt)
             sm.set_array([])
             cbar = plt.colorbar(sm, ax=ax[0, 0])
@@ -440,30 +442,22 @@ class persistence_correction:
         with open(json_path, "r") as f:
             self.params = json.load(f)
 
-        self.hdul = fits.open(image)
         
-        self.gain = self.hdul[1].header['EGAIN']
-        self.exptime = self.hdul[1].header['EXPTIME']
-        self.init_time = self.hdul[1].header['JD']
+        self.imgs = []
         
-        self.imgdata = np.copy(self.hdul[1].data)
+        self.series_ti = None
         
-        self.med_fluence = np.median(self.imgdata)
+        self.master_mask = None
+        self.master_med_fluence = None
+        self.master_fluence
+        self.master_time = None
         
-        if sigma_thresh is not None:
-            clipped = sigma_clip(self.imgdata, sigma=3, maxiters=5)
-            self.background = np.nanmedian(clipped)
-    
-            self.threshold = self.background + sigma_thresh*np.std(clipped)
-            
-            self.mask = (np.isfinite(self.imgdata) & (self.imgdata > self.threshold))
-            
-        else:
-            self.mask = np.ones(self.imgdata.shape, dtype=bool)
+        self.master_persist = None
 
 
+    ################## PERSISTENCE CHARACTERIZATION ##################
 
-    def init_persist(self, fluence):
+    def init_persist(self, fluence, med_fluence):
 
         init_params_coef = self.params['Initial Parameters']['Coefficients']
         
@@ -473,7 +467,7 @@ class persistence_correction:
         
         D_m, D_b = init_params_const
         
-        initial_persist_model = A_i * fluence**3 + B_i * fluence**2 + C_i * fluence + (D_m * self.med_fluence + D_b)
+        initial_persist_model = A_i * fluence**3 + B_i * fluence**2 + C_i * fluence + (D_m * med_fluence + D_b)
         
         return initial_persist_model
     
@@ -491,9 +485,9 @@ class persistence_correction:
 
 
 
-    def persistence_model(self,fluence,time):
+    def persistence_model(self,fluence, med_fluence, time):
         
-        p_0 = self.init_persist(fluence)
+        p_0 = self.init_persist(fluence, med_fluence)
         
         p_t = self.persist_decay(fluence, time)
         
@@ -501,7 +495,7 @@ class persistence_correction:
     
     
     
-    def model_integral(self, fluence, time):
+    def model_integral(self, fluence, med_fluence, time):
         
         decay_params = self.params['Decay Parameters']
         
@@ -515,13 +509,13 @@ class persistence_correction:
         
         D_m, D_b = init_params_const
         
-        return time * (D_m *self.med_fluence + D_b + A_i*fluence**3 + B_i*fluence**2 + C_i*fluence - a_d) - (a_d*np.exp((-b_d*fluence - c_d)*time - (-b_d*fluence - c_d)*self.exptime)/(b_d*fluence+c_d))
+        return time * (D_m * med_fluence + D_b + A_i*fluence**3 + B_i*fluence**2 + C_i*fluence - a_d) - (a_d*np.exp((-b_d*fluence - c_d)*time - (-b_d*fluence - c_d)*self.exptime)/(b_d*fluence+c_d))
         
         
         
-    def analytical_integral(self, fluence, t_0, t_1):
+    def analytical_integral(self, fluence, med_fluence, t_0, t_1):
         
-        return self.model_integral(fluence,t_1) - self.model_integral(fluence,t_0)
+        return self.model_integral(fluence,med_fluence,t_1) - self.model_integral(fluence,med_fluence,t_0)
         
         
     
@@ -569,50 +563,90 @@ class persistence_correction:
             rot.save(save_path, dpi=100, writer='pillow')
     
     
-
-    def correct_persistence(self, raw_img, save_path=False, save_persist=False, visualize=False, verbose=False):
-
-        raw_hdul = fits.open(raw_img)
+    
+    ################## PERSISTENCE CORRECTION ##################     
+    
+    def correct_img(self, filename, mask_thresh=10000, save_path=False, save_persist=False, visualize=False):
+        '''
+        Function opens image and obtains basic characteristics. If the first in a series no further action is taken.
+        Subsequent images are corrected for persistence. Instead of correcting for each prior image, only the values 
+        which produce the greatest persistence are corrected for which should work examining the persistence characteristics 
+        of light series images.
         
-        raw_imgdata = np.copy(raw_hdul[1].data) * raw_hdul[1].header['EGAIN']
+        Parameters:
+                filename: str/path; the absolute path to the image being being corrected
+                mask_thresh: int [ADU]; the count threshold for which persistence is corrected
+                save_path: str/path; the absolute path leading to
+        '''
+        root, ext = os.path.splitext(filename)
+        head, tail = os.path.split(filename)
         
-        raw_exptime = raw_hdul[1].header['EXPTIME']
-        raw_init_time = raw_hdul[1].header['JD'] # JD date for start of the exposure
+        extn = 0
+        if (ext == '.fz'):
+            extn = 1
         
-        raw_init_time = (raw_init_time - self.init_time) * 24 * 3600 # get start time in seconds
-        raw_end_time = raw_init_time + raw_exptime
+        # image characteristics
+        self.hdul = fits.open(filename)
         
-        persist_img = np.zeros(raw_imgdata.shape)
-        corrected_img = np.copy(raw_imgdata)
+        self.gain = self.hdul[extn].header['EGAIN']
+        self.exptime = self.hdul[extn].header['EXPTIME']
         
-        t0 = time.perf_counter()
+        if self.series_ti is None:
+            self.series_ti = self.hdul[extn].header['JD']
+            self.init_time = self.series_ti
         
-        fluence_arr = self.imgdata[self.mask]
+        else:
+            self.init_time = self.hdul[extn].headr['JD']
         
-        synth_values = (self.analytical_integral(fluence_arr, raw_init_time, raw_end_time))
+        self.imgdata = np.copy(self.hdul[extn].data)
+        self.imgs.append(self.imgdata)
         
-        persist_img[self.mask] = synth_values
+        self.med_fluence = np.median(self.imgdata)
         
-        corrected_img[self.mask] = np.abs(corrected_img[self.mask] - synth_values)
+        self.mask = (np.isfinite(self.imgdata) & (self.imgdata > mask_thresh))
+        
+        # define initial data arrays
+        if self.master_mask is None:
             
-        t1 = time.perf_counter()
+            self.master_mask = self.mask.copy()
+            
+            self.master_med_fluence = np.full(self.mask.shape, -np.inf)
+            self.master_med_fluence[self.mask] = self.med_fluence
+            
+            self.master_fluence = np.full(self.mask.shape, -np.inf)
+            self.master_fluence[self.mask] = self.imgdata[self.mask]
+            
+            self.master_time = np.full(self.mask.shape, np.nan)
+            self.master_time[self.mask] = self.init_time
+            
+            return self.imgdata
+
+
+        ### correct persistence before updating master array
+        dt0 = (self.init_time - self.master_time[self.master_mask]) * 24 * 3600
+        dt1 = dt0 + self.exptime
+    
+        synth_values = np.abs(
+            self.analytical_integral(
+                self.master_fluence[self.master_mask],
+                dt0,
+                dt1
+            )
+        )
+    
+        self.persist_img = synth_values
         
-        if verbose: print(f"Elapsed: {t1 - t0:.6f} seconds")
-
-
-        ### model trained with raw images, might lead to oversubtraction of persistence if images are processed first
-        clipped = sigma_clip(raw_imgdata[~self.mask], sigma=3, maxiters=5)
-        bkg = np.nanmedian(clipped)
-
-        corrected_img[~self.mask] -= bkg
-
+        self.corrected_img = self.imgdata.copy()
+    
+        self.corrected_img[self.master_mask] -= synth_values
+        
         if save_path is not False:
             
             if save_persist is True:
-                hdu = fits.PrimaryHDU(data=persist_img)
+                hdu = fits.PrimaryHDU(data=self.persist_img)
                 hdu.writeto(f'{save_path}/persist.fits', overwrite=True)
             
-            hdu = fits.PrimaryHDU(data=corrected_img)
+            hdu = fits.PrimaryHDU(data=self.imgdata)
             hdu.writeto(f'{save_path}/corrected.fits', overwrite=True)
 
 
@@ -621,37 +655,57 @@ class persistence_correction:
             fig, ax = plt.subplots(1,3,layout='constrained',dpi=1000)
             
             # ploting images
-            ax[0].imshow(raw_imgdata, cmap='gray', norm=LogNorm(), origin='lower')
+            ax[0].imshow(self.imgdata, cmap='gray', norm=LogNorm(), origin='lower')
             ax[0].set_title('Original Dark')
-            ax[1].imshow(persist_img, cmap='gray', norm=LogNorm(), origin='lower')
+            ax[1].imshow(self.persist_img, cmap='gray', norm=LogNorm(), origin='lower')
             ax[1].set_title('Persistence Image')
-            ax[2].imshow(corrected_img, cmap='gray', norm=LogNorm(), origin='lower')
+            ax[2].imshow(self.corrected_img, cmap='gray', norm=LogNorm(), origin='lower')
             ax[2].set_title('Corrected Image')
     
             plt.show()
         
-        return corrected_img
+
+        ### Update master array
+        # New pixels exibiting significant persistence
+        new_pixels = self.mask & ~self.master_mask
+
+        self.master_mask[new_pixels] = True
+        self.master_fluence[new_pixels] = self.imgdata[new_pixels]
+        self.master_med_fluence[new_pixels] = self.med_fluence
+        self.master_time[new_pixels] = self.init_time
+
+        # Repeat pixels
+        repeat_pixels = self.mask & self.master_mask
+        
+        if np.any(repeat_pixels):
+
+            # time since previous exposure for these pixels
+            dt_old = self.init_time - self.master_time[repeat_pixels]
+    
+            # persistence from previous exposure evaluated now
+            p_old = self.persistence_model(
+                self.master_fluence[repeat_pixels],
+                self.master_med_fluence[repeat_pixels],
+                dt_old + self.exptime
+            )
+    
+            # persistence from the new exposure (evaluated at t=0)
+            p_new = self.persistence_model(
+                self.imgdata[repeat_pixels],
+                self.med_fluence,
+                self.exptime
+            )
+    
+            overwrite = p_new > p_old
+    
+            if np.any(overwrite):
+                idx = np.where(repeat_pixels)
+                sel = overwrite
+    
+                self.master_fluence[idx[0][sel], idx[1][sel]] = self.imgdata[idx][sel]
+                self.master_med_fluence[idx[0][sel], idx[1][sel]] = self.med_fluence
+                self.master_time[idx[0][sel], idx[1][sel]] = self.init_time
 
         
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        return self.corrected_img
+    
