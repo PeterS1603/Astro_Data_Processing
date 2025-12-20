@@ -437,7 +437,7 @@ class persistence_characterization:
 
 class persistence_correction:
     
-    def __init__(self,json_path,image,sigma_thresh=5):
+    def __init__(self,json_path):
         
         with open(json_path, "r") as f:
             self.params = json.load(f)
