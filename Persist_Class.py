@@ -449,7 +449,7 @@ class persistence_correction:
         
         self.master_mask = None
         self.master_med_fluence = None
-        self.master_fluence
+        self.master_fluence = None
         self.master_time = None
         
         self.master_persist = None
@@ -596,7 +596,7 @@ class persistence_correction:
             self.init_time = self.series_ti
         
         else:
-            self.init_time = self.hdul[extn].headr['JD']
+            self.init_time = self.hdul[extn].header['JD']
         
         self.imgdata = np.copy(self.hdul[extn].data)
         self.imgs.append(self.imgdata)
@@ -629,14 +629,18 @@ class persistence_correction:
         synth_values = np.abs(
             self.analytical_integral(
                 self.master_fluence[self.master_mask],
+                self.master_med_fluence[self.master_mask],
                 dt0,
                 dt1
             )
         )
-    
-        self.persist_img = synth_values
         
-        self.corrected_img = self.imgdata.copy()
+    
+        self.persist_img = np.full(self.mask.shape, 0)
+        
+        self.persist_img[self.master_mask] = synth_values
+                
+        self.corrected_img = self.imgdata.copy().astype(np.float64)
     
         self.corrected_img[self.master_mask] -= synth_values
         
@@ -644,10 +648,10 @@ class persistence_correction:
             
             if save_persist is True:
                 hdu = fits.PrimaryHDU(data=self.persist_img)
-                hdu.writeto(f'{save_path}/persist.fits', overwrite=True)
+                hdu.writeto(f'{save_path}/{tail.split(".")[0]}_persist.fits', overwrite=True)
             
             hdu = fits.PrimaryHDU(data=self.imgdata)
-            hdu.writeto(f'{save_path}/corrected.fits', overwrite=True)
+            hdu.writeto(f'{save_path}/{tail.split(".")[0]}_corrected.fits', overwrite=True)
 
 
         if visualize is True:
