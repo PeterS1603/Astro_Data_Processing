@@ -626,15 +626,13 @@ class persistence_correction:
         dt0 = (self.init_time - self.master_time[self.master_mask]) * 24 * 3600
         dt1 = dt0 + self.exptime
     
-        synth_values = np.abs(
-            self.analytical_integral(
+        synth_values = self.analytical_integral(
                 self.master_fluence[self.master_mask],
                 self.master_med_fluence[self.master_mask],
                 dt0,
                 dt1
-            )
-        )
-        
+                )
+    
     
         self.persist_img = np.full(self.mask.shape, 0)
         
@@ -642,7 +640,7 @@ class persistence_correction:
                 
         self.corrected_img = self.imgdata.copy().astype(np.float64)
     
-        self.corrected_img[self.master_mask] -= synth_values
+        self.corrected_img[self.master_mask] = np.abs(self.corrected_img[self.master_mask] - synth_values)
         
         if save_path is not False:
             
@@ -650,7 +648,7 @@ class persistence_correction:
                 hdu = fits.PrimaryHDU(data=self.persist_img)
                 hdu.writeto(f'{save_path}/{tail.split(".")[0]}_persist.fits', overwrite=True)
             
-            hdu = fits.PrimaryHDU(data=self.imgdata)
+            hdu = fits.PrimaryHDU(data=self.corrected_img)
             hdu.writeto(f'{save_path}/{tail.split(".")[0]}_corrected.fits', overwrite=True)
 
 
