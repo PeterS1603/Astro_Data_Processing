@@ -220,7 +220,8 @@ class persistence_characterization:
             
             plt.show()
             
-            fig.savefig(plot_save_path) # save data plots created
+            if plot_save_path is not None:
+                fig.savefig(plot_save_path) # save data plots created
             
             
             
@@ -479,7 +480,7 @@ class persistence_correction:
         
         a_d, b_d, c_d = decay_params
         
-        decay_model = a_d * (np.exp(-(b_d*fluence + c_d)*(time-self.exptime)) - 1)
+        decay_model = a_d * (np.exp(-(b_d*fluence + c_d)*(time-self.exptime)) - 1)  
         
         return decay_model
 
@@ -566,7 +567,7 @@ class persistence_correction:
     
     ################## PERSISTENCE CORRECTION ##################     
     
-    def correct_img(self, filename, mask_thresh=10000, save_path=False, save_persist=False, visualize=False):
+    def correct_img(self, filename, mask_thresh=10000, save_path=False, save_persist=False, visualize=False, debug=False):
         '''
         Function opens image and obtains basic characteristics. If the first in a series no further action is taken.
         Subsequent images are corrected for persistence. Instead of correcting for each prior image, only the values 
@@ -595,11 +596,15 @@ class persistence_correction:
             self.series_ti = self.hdul[extn].header['JD']
             self.init_time = self.series_ti
         
+        
         else:
             self.init_time = self.hdul[extn].header['JD']
+            
+
+        #print(self.init_time - self.series_ti)
+        
         
         self.imgdata = np.copy(self.hdul[extn].data)
-        self.imgs.append(self.imgdata)
         
         self.med_fluence = np.median(self.imgdata)
         
@@ -607,7 +612,7 @@ class persistence_correction:
         
         # define initial data arrays
         if self.master_mask is None:
-            
+
             self.master_mask = self.mask.copy()
             
             self.master_med_fluence = np.full(self.mask.shape, -np.inf)
@@ -631,7 +636,7 @@ class persistence_correction:
                 self.master_med_fluence[self.master_mask],
                 dt0,
                 dt1
-                )
+                ) / self.gain
     
     
         self.persist_img = np.full(self.mask.shape, 0)
@@ -642,14 +647,24 @@ class persistence_correction:
     
         self.corrected_img[self.master_mask] = np.abs(self.corrected_img[self.master_mask] - synth_values)
         
+        if debug is True: print(len(self.imgs))
+                
+        
         if save_path is not False:
+            hdus = []
             
-            if save_persist is True:
-                hdu = fits.PrimaryHDU(data=self.persist_img)
-                hdu.writeto(f'{save_path}/{tail.split(".")[0]}_persist.fits', overwrite=True)
+            hdus.append(fits.PrimaryHDU(self.corrected_img))
             
-            hdu = fits.PrimaryHDU(data=self.corrected_img)
-            hdu.writeto(f'{save_path}/{tail.split(".")[0]}_corrected.fits', overwrite=True)
+            if debug is True:
+                hdus.append(fits.ImageHDU(self.persist_img, name='PERSIST'))
+                #hdus.append(fits.ImageHDU(self.master_mask.astype(np.uint8), name='MASTER_MASK'))
+                hdus.append(fits.ImageHDU(self.master_fluence, name='MASTER_FLUENCE'))
+                #hdus.append(fits.ImageHDU(self.master_med_fluence, name='MASTER_MED_FLUENCE'))
+                #hdus.append(fits.ImageHDU(self.master_time, name='MASTER_TIME'))
+            
+            hdul = fits.HDUList(hdus)
+            
+            hdul.writeto(f'{save_path}/{tail.split(".")[0]}_corrected.fits', overwrite=True)
 
 
         if visualize is True:
@@ -683,6 +698,7 @@ class persistence_correction:
 
             # time since previous exposure for these pixels
             dt_old = self.init_time - self.master_time[repeat_pixels]
+            #print("dt_old:",dt_old)
     
             # persistence from previous exposure evaluated now
             p_old = self.persistence_model(
@@ -690,6 +706,7 @@ class persistence_correction:
                 self.master_med_fluence[repeat_pixels],
                 dt_old + self.exptime
             )
+            #print('p_old:', p_old)
     
             # persistence from the new exposure (evaluated at t=0)
             p_new = self.persistence_model(
@@ -697,17 +714,45 @@ class persistence_correction:
                 self.med_fluence,
                 self.exptime
             )
+            #print('p_new:', p_new)
     
             overwrite = p_new > p_old
     
-            if np.any(overwrite):
+            if np.any(overwrite): 
                 idx = np.where(repeat_pixels)
                 sel = overwrite
     
                 self.master_fluence[idx[0][sel], idx[1][sel]] = self.imgdata[idx][sel]
                 self.master_med_fluence[idx[0][sel], idx[1][sel]] = self.med_fluence
                 self.master_time[idx[0][sel], idx[1][sel]] = self.init_time
-
+        
+        self.imgs.append(self.imgdata)
         
         return self.corrected_img
+    
+
+
+### Utilization Example
+'''
+test_data = '/Users/petershea/Desktop/Research/TMMT-Photometry/AAS_Data/20240811/'
+save_path = '/Users/petershea/Desktop/Research/TMMT-Photometry/AAS_Data/20240811_red/'
+json_path = '/Users/petershea/Desktop/Research/Astro_Processing/tmmt_persist_model.json'
+
+persist = persistence_correction(json_path)
+
+files = sorted(os.listdir(test_data))
+files = [f for f in files if f.endswith(".fits") or f.endswith(".fz")]
+
+persist
+for file in files:
+    
+    persist.correct_img(test_data+file, save_path=save_path, visualize=True, debug=True)
+'''
+    
+    
+    
+    
+    
+    
+    
     
