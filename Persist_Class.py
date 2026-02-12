@@ -445,9 +445,13 @@ class persistence_correction:
 
         
         self.imgs = []
+        self.times = []
+        self.med_correction_vals = []
+        self.correction_times = []
         
         self.series_ti = None
         
+        self.prev_persist_mask = None
         self.master_mask = None
         self.master_med_fluence = None
         self.master_fluence = None
@@ -567,7 +571,7 @@ class persistence_correction:
     
     ################## PERSISTENCE CORRECTION ##################     
     
-    def correct_img(self, filename, mask_thresh=10000, save_path=False, save_persist=False, visualize=False, debug=False):
+    def correct_img(self, filename, mask_thresh=5000, save_path=False, save_persist=False, simple_bkg_sub=False, visualize=False, debug=False):
         '''
         Function opens image and obtains basic characteristics. If the first in a series no further action is taken.
         Subsequent images are corrected for persistence. Instead of correcting for each prior image, only the values 
@@ -581,6 +585,8 @@ class persistence_correction:
         '''
         root, ext = os.path.splitext(filename)
         head, tail = os.path.split(filename)
+        
+        if debug is True: t0 = time.perf_counter()
         
         extn = 0
         if (ext == '.fz'):
@@ -647,8 +653,17 @@ class persistence_correction:
     
         self.corrected_img[self.master_mask] = np.abs(self.corrected_img[self.master_mask] - synth_values)
         
-        if debug is True: print(len(self.imgs))
-                
+        if debug is True: 
+            t1 = time.perf_counter()
+            print(len(self.imgs))
+            self.med_correction_vals.append(np.median(self.corrected_img[~self.mask & self.master_mask & (self.corrected_img < 1000)]))
+        
+        if simple_bkg_sub is True:
+            
+            bkg = np.median(self.corrected_img[~self.master_mask])
+            
+            self.corrected_img[~self.master_mask] -= bkg
+
         
         if save_path is not False:
             hdus = []
@@ -684,6 +699,10 @@ class persistence_correction:
 
         ### Update master array
         # New pixels exibiting significant persistence
+        if debug is True: t2 = time.perf_counter()
+        
+        self.prev_persist_mask = self.master_mask
+        
         new_pixels = self.mask & ~self.master_mask
 
         self.master_mask[new_pixels] = True
@@ -727,32 +746,66 @@ class persistence_correction:
                 self.master_time[idx[0][sel], idx[1][sel]] = self.init_time
         
         self.imgs.append(self.imgdata)
+        self.times.append((self.init_time-self.series_ti)*24*3600)
+        
+        if debug is True:
+            t3 = time.perf_counter()
+            self.correction_times.append((t1-t0) + (t3-t2))
+            print(f'Correction Time: {(t1-t0) + (t3-t2):.2e} s')
         
         return self.corrected_img
     
+    def plot_correction_values(self):
+        
+        fig, ax = plt.subplots(layout='constrained')
+        
+        ax.set_title('Median Correction Value')
+        ax.scatter(self.times,self.med_correction_vals)
+        
+        plt.show()
+        
+    def plot_hist_corrected_vals(self,nbins=500,max_val=1000):
+        
+        fig, ax = plt.subplots(layout='constrained')
+        
+        raw = self.imgdata[self.prev_persist_mask].flatten()
+        corr = self.corrected_img[self.prev_persist_mask].flatten()
+        
+        if max_val is not None:
+            keep = (raw <= max_val) & (corr <= max_val)
+            raw = raw[keep]
+            corr = corr[keep]
+        
+        bkg = np.median(self.corrected_img[~self.prev_persist_mask])
+        
+        std = np.std(self.corrected_img[~self.prev_persist_mask])
+        
+        bins = np.linspace(min(raw.min(),corr.min()),max(raw.max(),corr.max()),nbins)
+        
+        ax.hist(raw, bins=bins, histtype='step', linewidth=2, label='Raw', density=True)
+        ax.hist(corr, bins=bins, histtype='step', linewidth=2, label='Corrected', density=True)
+        
+        ax.axvline(x=bkg,linestyle='--',c='k')
+        ax.axvline(x=bkg+std,linestyle='--',c='k',alpha=0.7)
+        
+        ax.set_xlabel("Pixel Value (ADU)")
+        ax.set_ylabel("Normalized Counts")
+        ax.set_title("Persistence Correction Histogram Test")
+        plt.legend()
+        plt.show()
+        
+    
+    def plot_correction_time(self):
+        
+        fig, ax = plt.subplots(layout='constrained')
+        
+        ax.set_title('Correction Time')
+        ax.scatter(self.times, self.correction_times)
+        
+        plt.show()
+        
 
 
-### Utilization Example
-'''
-test_data = '/Users/petershea/Desktop/Research/TMMT-Photometry/AAS_Data/20240811/'
-save_path = '/Users/petershea/Desktop/Research/TMMT-Photometry/AAS_Data/20240811_red/'
-json_path = '/Users/petershea/Desktop/Research/Astro_Processing/tmmt_persist_model.json'
-
-persist = persistence_correction(json_path)
-
-files = sorted(os.listdir(test_data))
-files = [f for f in files if f.endswith(".fits") or f.endswith(".fz")]
-
-persist
-for file in files:
-    
-    persist.correct_img(test_data+file, save_path=save_path, visualize=True, debug=True)
-'''
-    
-    
-    
-    
-    
-    
+        
     
     
